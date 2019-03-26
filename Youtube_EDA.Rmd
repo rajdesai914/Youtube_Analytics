@@ -1,0 +1,442 @@
+---
+title: "Youtube Analytics EDA & Overview"
+author: "Raj Desai"
+date: "3/06/2019"
+output:
+  html_document: null
+  pdf_document: default
+  fig_height: 6
+highlight: tango
+fig_width: 9
+theme: cosmo
+code_folding: hide
+toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  
+  
+  
+  message = FALSE,
+  
+  warning = FALSE
+  
+)
+
+```
+![](https://traff1k.com/images/blog/blog_youtube.png)
+
+
+* Every minute, more than 100 hours of video are uploaded to **YouTube**. It has over a billion users, almost one-third of all people on the Internet. 
+
+#Loading Libraries
+```{r}
+set.seed(123)
+# Data manipulation
+library(data.table)
+library(dplyr)
+library(DT)
+library(lubridate)
+library(reshape)
+library(rjson)
+# Visualization
+library(ggplot2)
+library(ggpubr)
+library(GGally)
+library(ggcorrplot)
+library(ggrepel)
+# Wordcloud
+library(wordcloud)
+# Text manipulation
+library(tidytext)
+library(stringr)
+library(tm)
+library(sentimentr)
+library(wordcloud)
+library(RSentiment)
+
+```
+
+# Reading data and preparing the dataset
+```{r}
+#Reading the dataset of top trending videos from four different countries available on "www.kaggle.com"
+
+gb <- as.data.table(read.csv("GBvideos.csv"))
+
+gb[,"Location":="GB"]
+
+ind <- as.data.table(read.csv("INvideos.csv"))
+
+ind[,"Location":="IN"]
+
+ca <- as.data.table(read.csv("CAvideos.csv"))
+
+ca[,"Location":="CA"]
+
+us <- as.data.table(read.csv("USvideos.csv"))
+
+us[,"Location":="US"]
+
+# Reading the json files which contains the names of the categories to which the videos belong
+
+# LOADING DATA
+
+categories.ca <- fromJSON(file="CA_category_id.json")
+categories.gb <- fromJSON(file="GB_category_id.json")
+categories.ind <- fromJSON(file="IN_category_id.json")
+categories.us <- fromJSON(file="US_category_id.json")
+
+# RECOVERING VIDEO CATEGORIES
+ca.dict <- sapply(categories.ca$items, FUN=function(l){
+  id <- l$id
+  category <- l$snippet$title
+  return(c(id,category))
+})
+
+gb.dict <- sapply(categories.gb$items, FUN=function(l){
+  id <- l$id
+  category <- l$snippet$title
+  return(c(id,category))
+})
+
+ind.dict <- sapply(categories.ind$items, FUN=function(l){
+  id <- l$id
+  category <- l$snippet$title
+  return(c(id,category))
+})
+
+us.dict <- sapply(categories.us$items, FUN=function(l){
+  id <- l$id
+  category <- l$snippet$title
+  return(c(id,category))
+})
+
+ca.dict <- data.frame(t(ca.dict))
+gb.dict <- data.frame(t(gb.dict))
+ind.dict <- data.frame(t(ind.dict))
+us.dict <- data.frame(t(us.dict))
+
+colnames(ca.dict) <- c("category_id","category_title")
+colnames(gb.dict) <- c("category_id","category_title")
+colnames(ind.dict) <- c("category_id","category_title")
+colnames(us.dict) <- c("category_id","category_title")
+
+ca.dict$category_id <- as.numeric(as.character(ca.dict$category_id))
+gb.dict$category_id <- as.numeric(as.character(gb.dict$category_id))
+ind.dict$category_id <- as.numeric(as.character(ind.dict$category_id))
+us.dict$category_id <- as.numeric(as.character(us.dict$category_id))
+
+rownames(ca.dict) <- ca.dict$category_id
+rownames(gb.dict) <- gb.dict$category_id
+rownames(ind.dict) <- ind.dict$category_id
+rownames(us.dict) <- us.dict$category_id
+
+# ASSIGNING CATEGORIES TO VIDEOS
+ca  <- merge(ca,ca.dict,by="category_id")
+gb <- merge(gb,gb.dict,by="category_id")
+ind <- merge(ind,ind.dict,by="category_id")
+us <- merge(us,us.dict,by="category_id")
+
+
+#combining the four datasets into one
+
+data <- as.data.table(rbind(ca,gb,ind,us))
+
+#Converting trending date to date datatype
+
+data$trending_date <- ydm(data$trending_date)
+
+#Splitting publish time into publish date and time
+
+data[, c("P_day", "P_time") := tstrsplit(publish_time, "T", fixed=TRUE)]
+
+data$publish_time <- NULL
+
+data$P_day <- ymd(data$P_day)
+
+# Converting time to HMS format
+
+data$P_time <- strtrim(data$P_time,5)
+
+data$P_time <- hm(data$P_time)
+
+# Removing variables which are not important for our analysis
+
+#data$thumbnail_link <- NULL
+data$comments_disabled <- NULL
+data$video_error_or_removed <- NULL
+data$ratings_disabled <- NULL
+
+# Converting Location to factors
+
+data$Location <- as.factor(data$Location)
+
+#Creating metric to find avg time for a video to viral
+
+data$diff_days <- data$trending_date-data$P_day
+```
+
+# Initial Analysis of the dataset 
+
+*The dataset has 16 variables and 158098 datapoints
+
+*Ourdataset includes following variables
+*- video_id  - trending_date - title - channel_title - category_id - tags  - views - likes 
+*dislikes  - comment_count - description - location  - category_title  - Publish Date  - Publish Time  - Time to viral
+
+# Finding the correlation between numeric variables
+```{r}
+corr <- cor(data[,c("views","likes","dislikes","comment_count"), with=F])
+
+ggcorrplot(corr, hc.order=T, type="lower",outline.col="white",
+             ggtheme = ggplot2::theme_gray,
+             lab=T,
+             colors = c("#6D9EC1", "white", "#E46726"))
+```
+* We see a high correlation between the number of likes on a video and views
+* Whereas the correlation is almost half between dislikes and views
+
+# Most...{.tabset .tabset-pills}
+
+
+
+## Viewed videos
+
+```{r}
+
+mvideo <- data[,.("Total_Views"=round(max(views,na.rm = T),digits = 2)),by=.(title,thumbnail_link)][order(-Total_Views)]
+
+
+
+mvideo %>% 
+
+  mutate(image = paste0('<img width="80%" height="80%" src="', thumbnail_link , '"></img>')) %>% 
+
+  arrange(-Total_Views) %>% 
+
+  top_n(5,wt = Total_Views) %>% 
+
+  select(image, title, Total_Views) %>% 
+
+  datatable(class = "nowrap hover row-border", escape = FALSE, options = list(dom = 't',scrollX = TRUE, autoWidth = TRUE))
+
+```
+
+
+
+
+
+## Liked videos
+
+```{r}
+
+mvideo <- data[,.("Total_Likes"=round(max(likes,na.rm = T),digits = 2)),by=.(title,thumbnail_link)][order(-Total_Likes)]
+
+
+
+mvideo %>% 
+
+  mutate(image = paste0('<img width="80%" height="80%" src="', thumbnail_link , '"></img>')) %>% 
+
+  arrange(-Total_Likes) %>% 
+
+  top_n(5,wt = Total_Likes) %>% 
+
+  select(image, title, Total_Likes) %>% 
+
+  datatable(class = "nowrap hover row-border", escape = FALSE, options = list(dom = 't',scrollX = TRUE, autoWidth = TRUE))
+
+```
+
+
+
+## Disliked videos
+
+```{r}
+
+mvideo <- data[,.("Total_Dislikes"=round(max(dislikes,na.rm = T),digits = 2)),by=.(title,thumbnail_link)][order(-Total_Dislikes)]
+
+
+
+mvideo %>% 
+
+  mutate(image = paste0('<img width="80%" height="80%" src="', thumbnail_link , '"></img>')) %>% 
+
+  arrange(-Total_Dislikes) %>% 
+
+  top_n(5,wt = Total_Dislikes) %>% 
+
+  select(image, title, Total_Dislikes) %>% 
+
+  datatable(class = "nowrap hover row-border", escape = FALSE, options = list(dom = 't',scrollX = TRUE, autoWidth = TRUE))
+
+```
+
+
+
+
+
+## Commented videos
+
+```{r}
+
+mvideo <- data[,.("Total_comments"=round(max(comment_count,na.rm = T),digits = 2)),by=.(title,thumbnail_link)][order(-Total_comments)]
+
+
+
+mvideo %>% 
+
+  mutate(image = paste0('<img width="80%" height="80%" src="', thumbnail_link , '"></img>')) %>% 
+
+  arrange(-Total_comments) %>% 
+
+  top_n(5,wt = Total_comments) %>% 
+
+  select(image, title, Total_comments) %>% 
+
+  datatable(class = "nowrap hover row-border", escape = FALSE, options = list(dom = 't',scrollX = TRUE, autoWidth = TRUE))
+
+```
+
+
+# Top Trending Channels
+
+```{r}
+ggplot(data[,.N,by=channel_title][order(-N)][1:10],aes(reorder(channel_title,-N),N,fill=channel_title))+
+  geom_bar(stat="identity")+
+  geom_label(aes(label=N))+
+  guides(fill="none")+
+  theme(axis.text.x = element_text(angle = 45,hjust = 1))+  
+  labs(caption="Number of videos",title=" Top trending channel titles in all countries")+
+  xlab(NULL)+ylab(NULL)+coord_flip()
+```
+
+* We see that the most number of videos are posted by channels which have shows on a regular basis
+
+# Top Trending Categories 
+
+```{r}
+
+ggplot(data[,.N,by=category_title][order(-N)][1:10],aes(reorder(category_title,-N),N,fill=as.factor(category_title)))+
+  geom_bar(stat="identity")+
+  guides(fill="none")+
+  theme(axis.text.x = element_text(angle = 45,hjust = 1))+
+  labs(title=" Top Category ID")+
+  xlab("Category")+ylab("Number of videos")
+
+```
+
+# How many days does it take for a video to trend
+```{r}
+ggplot(data[diff_days<30],aes(as.factor(diff_days),fill=as.factor(diff_days)))+
+  geom_bar()+
+  guides(fill="none")+
+  labs(title=" Time between published and trending",subtitle="In days")+
+  xlab("Number of Days")
+```
+* It usually takes atleast one to two days for a video to trend, never starts trending on the same day
+
+#Views v/s Likes
+
+```{r}
+ggplot(data[,.("views"=max(views),"likes"=max(likes)),by=title],aes(views,likes,colour=likes,size=likes))+
+  geom_jitter()+
+  geom_smooth()+
+  guides(fill="none")+
+  labs(caption="Donyoe",title="Views V/s Likes")+
+  theme(legend.position ="none")+
+  geom_text_repel(data=subset(data[,.("views"=max(views),"likes"=max(likes)),by=title], views > 1e+08),aes(views,likes,label=title),check_overlap=T)
+```
+
+#Likes v/s Comments
+
+```{r}
+ggplot(data[,.("comment_count"=max(comment_count),"likes"=max(likes)),by=title],aes(comment_count,likes,colour=likes,size=likes))+
+  geom_jitter()+
+  geom_smooth()+
+  guides(fill="none")+
+  labs(caption="Donyoe",title="Views V/s Comment")+
+  theme(legend.position = "none")+geom_text_repel(data=subset(data[,.("comment_count"=max(comment_count),"likes"=max(likes)),by=title], likes > 3e+06),aes(comment_count,likes,label=title),check_overlap=T)
+```
+
+# Numbers based on countries{.tabset .tabset-pills}
+
+
+
+## Total number of views
+
+```{r}
+
+ggplot(data[,.("Total_Views"=max(views)),by=Location],aes(reorder(Location,-Total_Views),Total_Views,fill=Location))+
+  geom_bar(stat="identity")+
+  geom_label(aes(label=Total_Views))+
+  guides(fill="none")+
+  theme(axis.text.x = element_text(angle = 45,hjust = 1))+  
+  labs(title=" Total Views by Countries")+
+  xlab(NULL)+
+  ylab(NULL)
+
+```
+
+
+
+* GB is the Country with most viewed videos in the trending field with significative difference with the other countries, almost doubled the second country.
+
+
+
+## Total number of likes
+
+```{r}
+
+ggplot(data[,.("Total_Likes"=max(likes)),by=Location],aes(reorder(Location,-Total_Likes),Total_Likes,fill=Location))+
+  geom_bar(stat="identity")+
+  geom_label(aes(label=Total_Likes))+
+  guides(fill="none")+
+  theme(axis.text.x = element_text(angle = 45,hjust = 1))+  
+  labs(title=" Total number of likes by Countries")+
+  xlab(NULL)+
+  ylab(NULL)
+
+```
+
+
+
+## Total number of dislikes
+
+```{r}
+
+ggplot(data[,.("Total_Dislikes"=max(dislikes)),by=Location],aes(reorder(Location,-Total_Dislikes),Total_Dislikes,fill=Location))+
+  geom_bar(stat="identity")+
+  geom_label(aes(label=Total_Dislikes))+
+  guides(fill="none")+
+  theme(axis.text.x = element_text(angle = 45,hjust = 1))+  
+  labs(title=" Total Dislikes by Countries")+xlab(NULL)+ylab(NULL)
+
+```
+
+
+
+## Total number of comments
+
+```{r}
+
+ggplot(data[,.("Total_Comments"=max(comment_count)),by=Location],aes(reorder(Location,-Total_Comments),Total_Comments,fill=Location))+
+  geom_bar(stat="identity")+
+  geom_label(aes(label=Total_Comments))+
+  guides(fill="none")+theme(axis.text.x = element_text(angle = 45,hjust = 1))+  labs(title=" Total Comments by Countries")+xlab(NULL)+ylab(NULL)
+
+```
+
+# Average time for a video to trend by countries
+
+```{r}
+
+ggplot(data[diff_days<20],aes(as.factor(diff_days),fill=as.factor(diff_days)))+
+  geom_bar()+guides(fill="none")+
+  labs(title=" Time between published and trending by countries",subtitle="In days")+
+  xlab(NULL)+ylab(NULL)+facet_wrap(~Location)
+
+```
+
+* We can clearly see in Canada and India that a video starts trending in 1 to 2 days, Whereas that's not the case in US and GB
